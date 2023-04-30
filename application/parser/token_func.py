@@ -9,7 +9,7 @@ from math import ceil
 def separate_header_and_body(text):
     header_pattern = r"^(.*?\n){3}"
     match = re.match(header_pattern, text)
-    header = match.group(0)
+    header = match[0]
     body = text[len(header):]
     return header, body
 
@@ -24,7 +24,7 @@ def group_documents(documents: List[Document], min_tokens: int, max_tokens: int)
             current_group = Document(text=doc.text, doc_id=doc.doc_id, embedding=doc.embedding,
                                      extra_info=doc.extra_info)
         elif len(tiktoken.get_encoding("cl100k_base").encode(current_group.text)) + doc_len < max_tokens and doc_len >= min_tokens:
-            current_group.text += " " + doc.text
+            current_group.text += f" {doc.text}"
         else:
             docs.append(current_group)
             current_group = Document(text=doc.text, doc_id=doc.doc_id, embedding=doc.embedding,
@@ -55,7 +55,7 @@ def split_documents(documents: List[Document], max_tokens: int) -> List[Document
     return docs
 
 def group_split(documents: List[Document], max_tokens: int = 2000, min_tokens: int = 150, token_check: bool = True):
-    if token_check == False:
+    if not token_check:
         return documents
     print("Grouping small documents")
     try:

@@ -79,15 +79,8 @@ with open("prompts/chat_combine_prompt.txt", "r") as f:
 with open("prompts/chat_reduce_prompt.txt", "r") as f:
     chat_reduce_template = f.read()
 
-if os.getenv("API_KEY") is not None:
-    api_key_set = True
-else:
-    api_key_set = False
-if os.getenv("EMBEDDINGS_KEY") is not None:
-    embeddings_key_set = True
-else:
-    embeddings_key_set = False
-
+api_key_set = os.getenv("API_KEY") is not None
+embeddings_key_set = os.getenv("EMBEDDINGS_KEY") is not None
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER = "inputs"
 app.config['CELERY_BROKER_URL'] = os.getenv("CELERY_BROKER_URL")
@@ -100,24 +93,20 @@ db = mongo["docsgpt"]
 vectors_collection = db["vectors"]
 
 async def async_generate(chain, question, chat_history):
-    result = await chain.arun({"question": question, "chat_history": chat_history})
-    return result
+    return await chain.arun({"question": question, "chat_history": chat_history})
 
 def run_async_chain(chain, question, chat_history):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    result = {}
     try:
         answer = loop.run_until_complete(async_generate(chain, question, chat_history))
     finally:
         loop.close()
-    result["answer"] = answer
-    return result
+    return {"answer": answer}
 
 @celery.task(bind=True)
 def ingest(self, directory, formats, name_job, filename, user):
-    resp = ingest_worker(self, directory, formats, name_job, filename, user)
-    return resp
+    return ingest_worker(self, directory, formats, name_job, filename, user)
 
 
 @app.route("/")
@@ -132,15 +121,12 @@ def api_answer():
     question = data["question"]
     history = data["history"]
     print('-' * 5)
-    if not api_key_set:
-        api_key = data["api_key"]
-    else:
-        api_key = os.getenv("API_KEY")
-    if not embeddings_key_set:
-        embeddings_key = data["embeddings_key"]
-    else:
-        embeddings_key = os.getenv("EMBEDDINGS_KEY")
-
+    api_key = os.getenv("API_KEY") if api_key_set else data["api_key"]
+    embeddings_key = (
+        os.getenv("EMBEDDINGS_KEY")
+        if embeddings_key_set
+        else data["embeddings_key"]
+    )
     # use try and except  to check for exception
     try:
         # check if the vectorstore is set
@@ -160,15 +146,18 @@ def api_answer():
         # vectorstore = "outputs/inputs/"
         # loading the index and the store and the prompt template
         # Note if you have used other embeddings than OpenAI, you need to change the embeddings
-        if embeddings_choice == "openai_text-embedding-ada-002":
-            docsearch = FAISS.load_local(vectorstore, OpenAIEmbeddings(openai_api_key=embeddings_key))
-        elif embeddings_choice == "huggingface_sentence-transformers/all-mpnet-base-v2":
-            docsearch = FAISS.load_local(vectorstore, HuggingFaceHubEmbeddings())
-        elif embeddings_choice == "huggingface_hkunlp/instructor-large":
-            docsearch = FAISS.load_local(vectorstore, HuggingFaceInstructEmbeddings())
-        elif embeddings_choice == "cohere_medium":
+        if embeddings_choice == "cohere_medium":
             docsearch = FAISS.load_local(vectorstore, CohereEmbeddings(cohere_api_key=embeddings_key))
 
+        elif embeddings_choice == "huggingface_hkunlp/instructor-large":
+            docsearch = FAISS.load_local(vectorstore, HuggingFaceInstructEmbeddings())
+        elif (
+            embeddings_choice
+            == "huggingface_sentence-transformers/all-mpnet-base-v2"
+        ):
+            docsearch = FAISS.load_local(vectorstore, HuggingFaceHubEmbeddings())
+        elif embeddings_choice == "openai_text-embedding-ada-002":
+            docsearch = FAISS.load_local(vectorstore, OpenAIEmbeddings(openai_api_key=embeddings_key))
         # create a prompt template
         if history:
             history = json.loads(history)
@@ -182,7 +171,16 @@ def api_answer():
 
         q_prompt = PromptTemplate(input_variables=["context", "question"], template=template_quest,
                                   template_format="jinja2")
-        if llm_choice == "openai_chat":
+        if llm_choice == "cohere":
+            llm = Cohere(model="command-xlarge-nightly", cohere_api_key=api_key)
+
+        elif llm_choice == "huggingface":
+            llm = HuggingFaceHub(repo_id="bigscience/bloom", huggingfacehub_api_token=api_key)
+        elif llm_choice == "manifest":
+            llm = ManifestWrapper(client=manifest, llm_kwargs={"temperature": 0.001, "max_tokens": 2048})
+        elif llm_choice == "openai":
+            llm = OpenAI(openai_api_key=api_key, temperature=0)
+        elif llm_choice == "openai_chat":
             # llm = ChatOpenAI(openai_api_key=api_key, model_name="gpt-4")
             llm = ChatOpenAI(openai_api_key=api_key)
             messages_combine = [
@@ -195,15 +193,6 @@ def api_answer():
                 HumanMessagePromptTemplate.from_template("{question}")
             ]
             p_chat_reduce = ChatPromptTemplate.from_messages(messages_reduce)
-        elif llm_choice == "openai":
-            llm = OpenAI(openai_api_key=api_key, temperature=0)
-        elif llm_choice == "manifest":
-            llm = ManifestWrapper(client=manifest, llm_kwargs={"temperature": 0.001, "max_tokens": 2048})
-        elif llm_choice == "huggingface":
-            llm = HuggingFaceHub(repo_id="bigscience/bloom", huggingfacehub_api_token=api_key)
-        elif llm_choice == "cohere":
-            llm = Cohere(model="command-xlarge-nightly", cohere_api_key=api_key)
-
         if llm_choice == "openai_chat":
             question_generator = LLMChain(llm=llm, prompt=CONDENSE_QUESTION_PROMPT)
             doc_chain = load_qa_chain(llm, chain_type="map_reduce", combine_prompt=p_chat_combine)
@@ -242,7 +231,7 @@ def api_answer():
     except Exception as e:
         # print whole traceback
         traceback.print_exc()
-        print(str(e))
+        print(e)
         return bad_request(500, str(e))
 
 
@@ -254,26 +243,24 @@ def check_docs():
     if data["docs"].split("/")[0] == "local":
         return {"status": 'exists'}
     vectorstore = "vectors/" + data["docs"]
-    base_path = 'https://raw.githubusercontent.com/arc53/DocsHUB/main/'
     if os.path.exists(vectorstore) or data["docs"] == "default":
         return {"status": 'exists'}
-    else:
-        r = requests.get(base_path + vectorstore + "index.faiss")
+    base_path = 'https://raw.githubusercontent.com/arc53/DocsHUB/main/'
+    r = requests.get(base_path + vectorstore + "index.faiss")
 
-        if r.status_code != 200:
-            return {"status": 'null'}
-        else:
-            if not os.path.exists(vectorstore):
-                os.makedirs(vectorstore)
-            with open(vectorstore + "index.faiss", "wb") as f:
-                f.write(r.content)
+    if r.status_code != 200:
+        return {"status": 'null'}
+    if not os.path.exists(vectorstore):
+        os.makedirs(vectorstore)
+    with open(f"{vectorstore}index.faiss", "wb") as f:
+        f.write(r.content)
 
-            # download the store
-            r = requests.get(base_path + vectorstore + "index.pkl")
-            with open(vectorstore + "index.pkl", "wb") as f:
-                f.write(r.content)
+    # download the store
+    r = requests.get(base_path + vectorstore + "index.pkl")
+    with open(f"{vectorstore}index.pkl", "wb") as f:
+        f.write(r.content)
 
-        return {"status": 'loaded'}
+    return {"status": 'loaded'}
 
 
 @app.route("/api/feedback", methods=["POST"])
@@ -284,9 +271,9 @@ def api_feedback():
     feedback = data["feedback"]
 
     print('-' * 5)
-    print("Question: " + question)
-    print("Answer: " + answer)
-    print("Feedback: " + feedback)
+    print(f"Question: {question}")
+    print(f"Answer: {answer}")
+    print(f"Feedback: {feedback}")
     print('-' * 5)
     response = requests.post(
         url="https://86x89umx77.execute-api.eu-west-2.amazonaws.com/docsgpt-feedback",
@@ -321,8 +308,8 @@ def combined_json():
     }]
     # structure: name, language, version, description, fullName, date, docLink
     # append data from vectors_collection
-    for index in vectors_collection.find({'user': user}):
-        data.append({
+    data.extend(
+        {
             "name": index['name'],
             "language": index['language'],
             "version": '',
@@ -331,9 +318,10 @@ def combined_json():
             "date": index['date'],
             "docLink": index['location'],
             "model": embeddings_choice,
-            "location": "local"
-        })
-
+            "location": "local",
+        }
+        for index in vectors_collection.find({'user': user})
+    )
     data_remote = requests.get("https://d3dg1063dc54p9.cloudfront.net/combined.json").json()
     for index in data_remote:
         index['location'] = "remote"
@@ -359,21 +347,18 @@ def upload_file():
     if file.filename == '':
         return {"status": 'no file name'}
 
-    if file:
-        filename = secure_filename(file.filename)
-        # save dir
-        save_dir = os.path.join(app.config['UPLOAD_FOLDER'], user, job_name)
-        # create dir if not exists
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-
-        file.save(os.path.join(save_dir, filename))
-        task = ingest.delay('temp', [".rst", ".md", ".pdf", ".txt"], job_name, filename, user)
-        # task id
-        task_id = task.id
-        return {"status": 'ok', "task_id": task_id}
-    else:
+    if not file:
         return {"status": 'error'}
+    filename = secure_filename(file.filename)
+    # save dir
+    save_dir = os.path.join(app.config['UPLOAD_FOLDER'], user, job_name)
+    # create dir if not exists
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    file.save(os.path.join(save_dir, filename))
+    task = ingest.delay('temp', [".rst", ".md", ".pdf", ".txt"], job_name, filename, user)
+    return {"status": 'ok', "task_id": task.id}
 
 
 @app.route('/api/task_status', methods=['GET'])
@@ -442,9 +427,7 @@ def delete_old():
     import shutil
     path = request.args.get('path')
     dirs = path.split('/')
-    dirs_clean = []
-    for i in range(1, len(dirs)):
-        dirs_clean.append(secure_filename(dirs[i]))
+    dirs_clean = [secure_filename(dirs[i]) for i in range(1, len(dirs))]
     # check that path strats with indexes or vectors
     if dirs[0] not in ['indexes', 'vectors']:
         return {"status": 'error'}

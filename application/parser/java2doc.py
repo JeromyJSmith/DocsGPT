@@ -4,9 +4,11 @@ import javalang
 def find_files(directory):
     files_list = []
     for root, dirs, files in os.walk(directory):
-        for file in files:
-            if file.endswith('.java'):
-                files_list.append(os.path.join(root, file))
+        files_list.extend(
+            os.path.join(root, file)
+            for file in files
+            if file.endswith('.java')
+        )
     return files_list
 
 def extract_functions(file_path):
@@ -36,13 +38,11 @@ def extract_classes(file_path):
         for class_decl in tree.types:
             class_name = class_decl.name
             declarations = []
-            methods = []
             for field_decl in class_decl.fields:
                 field_name = field_decl.declarators[0].name
                 field_type = field_decl.type.name
                 declarations.append(f"{field_type} {field_name}")
-            for method_decl in class_decl.methods:
-                methods.append(method_decl.name)
+            methods = [method_decl.name for method_decl in class_decl.methods]
             class_string = "Declarations: " + ", ".join(declarations) + "\n  Method name: " + ", ".join(methods)
             classes[class_name] = class_string
     return classes
@@ -52,10 +52,8 @@ def extract_functions_and_classes(directory):
     functions_dict = {}
     classes_dict = {}
     for file in files:
-        functions = extract_functions(file)
-        if functions:
+        if functions := extract_functions(file):
             functions_dict[file] = functions
-        classes = extract_classes(file)
-        if classes:
+        if classes := extract_classes(file):
             classes_dict[file] = classes
     return functions_dict, classes_dict

@@ -30,11 +30,6 @@ class HTMLParser(BaseParser):
         from unstructured.staging.base import convert_to_isd
         from unstructured.cleaners.core import clean
 
-        # Using the unstructured library to convert the html to isd format
-        # isd sample : isd = [
-                            #   {"text": "My Title", "type": "Title"},
-                            #   {"text": "My Narrative", "type": "NarrativeText"}
-                            # ]
         with open(file, "r", encoding="utf-8") as fp:
             elements = partition_html(file=fp)
             isd = convert_to_isd(elements)  
@@ -62,7 +57,7 @@ class HTMLParser(BaseParser):
         # Where Each Title is grouped together with the data under it
 
         Chunks = [[]]
-        final_chunks = list(list())
+        final_chunks = []
 
         for i,isd_el in enumerate(isd):
             if i in title_indexes:
@@ -71,9 +66,7 @@ class HTMLParser(BaseParser):
 
         # Removing all the chunks with sum of lenth of all the strings in the chunk < 25 #TODO: This value can be an user defined variable
         for chunk in Chunks:
-            # sum of lenth of all the strings in the chunk
-            sum = 0
-            sum += len(str(chunk))
+            sum = 0 + len(str(chunk))
             if sum < 25:
                 Chunks.remove(chunk)
             else :         
